@@ -1,5 +1,0 @@
-module.exports = {
-  token: "8549358187:AAFWADEIpzlmgVsqZZtLn5g3-Ppk4tOpQ0Y",
-  id:"7770087246",
-  address:""
-};
